@@ -1,19 +1,21 @@
 import os
 import re
 import io
+import sys
+import threading
 import tkinter as tk
 from csv import writer
 from datetime import datetime
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-import imageio.v2 as imageio
-import numpy as np
 from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "StudentSnips")
 LOG_PATH = os.path.join(SAVE_DIR, "capture_log.csv")
 VERSION_FILE = os.path.join(os.path.dirname(__file__), "version.txt")
+ICON_REL_PATH = os.path.join("assets", "studentsnip.ico")
 MAX_GIF_BYTES = 50 * 1024 * 1024
 
 
@@ -26,14 +28,140 @@ def get_app_version():
         return "dev"
 
 
+def get_build_timestamp():
+    if getattr(sys, "frozen", False):
+        candidate_paths = [sys.executable]
+    else:
+        candidate_paths = [VERSION_FILE, __file__]
+
+    for candidate_path in candidate_paths:
+        try:
+            modified_at = datetime.fromtimestamp(os.path.getmtime(candidate_path))
+            return modified_at.strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            continue
+
+    return "unknown"
+
+
+class HoverToolTip:
+    def __init__(self, widget, text, delay_ms=3000):
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self.after_id = None
+        self.tip_window = None
+
+        self.widget.bind("<Enter>", self._schedule, add="+")
+        self.widget.bind("<Leave>", self._hide, add="+")
+        self.widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel_schedule()
+        self.after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel_schedule(self):
+        if self.after_id is not None:
+            self.widget.after_cancel(self.after_id)
+            self.after_id = None
+
+    def _show(self):
+        if self.tip_window is not None:
+            return
+
+        root_x = self.widget.winfo_rootx()
+        root_y = self.widget.winfo_rooty()
+        x = root_x + 12
+        y = root_y + self.widget.winfo_height() + 8
+
+        tip_window = tk.Toplevel(self.widget)
+        tip_window.wm_overrideredirect(True)
+        tip_window.attributes("-topmost", True)
+        tip_window.wm_geometry(f"+{x}+{y}")
+
+        label = tk.Label(
+            tip_window,
+            text=self.text,
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 8),
+            padx=6,
+            pady=3,
+            wraplength=260,
+        )
+        label.pack()
+
+        self.tip_window = tip_window
+
+    def _hide(self, _event=None):
+        self._cancel_schedule()
+        if self.tip_window is not None:
+            self.tip_window.destroy()
+            self.tip_window = None
+
+
+class ProgressFileWriter:
+    def __init__(self, file_path, progress_callback=None, min_update_bytes=262144, cancel_event=None):
+        self.file_path = file_path
+        self.progress_callback = progress_callback
+        self.min_update_bytes = max(1, int(min_update_bytes))
+        self.cancel_event = cancel_event
+        self._file = open(file_path, "wb")
+        self.bytes_written = 0
+        self._last_reported = 0
+        self.name = file_path
+
+    def write(self, data):
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise RuntimeError("CANCELED_BY_USER")
+        written = self._file.write(data)
+        self.bytes_written += written
+        if self.progress_callback is not None:
+            if (self.bytes_written - self._last_reported) >= self.min_update_bytes:
+                self._last_reported = self.bytes_written
+                self.progress_callback(self.bytes_written)
+        return written
+
+    def flush(self):
+        self._file.flush()
+
+    def tell(self):
+        return self._file.tell()
+
+    def seek(self, offset, whence=0):
+        return self._file.seek(offset, whence)
+
+    def close(self):
+        if not self._file.closed:
+            self._file.close()
+
+    def writable(self):
+        return True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
 class SnippingTool:
     def __init__(self):
         self.app_version = get_app_version()
+        self.build_timestamp = get_build_timestamp()
+        self._tooltips = []
+        self.icon_path = self._resolve_icon_path()
+        self._configure_windows_app_id()
         self.root = tk.Tk()
-        self.root.title(f"Student Screenshot Tool v{self.app_version}")
+        self.root.title(
+            f"Student Screenshot Tool v{self.app_version} | Build {self.build_timestamp}"
+        )
         self.root.resizable(False, False)
         self.root.bind_all("<Control-n>", self._on_shortcut_start_snip)
         self.root.bind_all("<Control-o>", self._on_shortcut_open_folder)
+        self._apply_window_icon(self.root)
 
         self.status_var = tk.StringVar(value="Ready")
         self.start_x = 0
@@ -58,131 +186,158 @@ class SnippingTool:
         self._build_main_ui()
         self._fit_window_to_content()
 
+    def _resolve_icon_path(self):
+        if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+            return os.path.join(sys._MEIPASS, ICON_REL_PATH)
+        return os.path.join(os.path.dirname(__file__), ICON_REL_PATH)
+
+    def _configure_windows_app_id(self):
+        if os.name != "nt":
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DigiPol.StudentSnip")
+        except Exception:
+            pass
+
+    def _apply_window_icon(self, window):
+        if not self.icon_path or not os.path.exists(self.icon_path):
+            return
+        try:
+            window.iconbitmap(self.icon_path)
+        except Exception:
+            pass
+
+    def _add_tooltip(self, widget, text):
+        self._tooltips.append(HoverToolTip(widget, text, delay_ms=3000))
+
     def _fit_window_to_content(self):
         self.root.update_idletasks()
         required_width = self.root.winfo_reqwidth()
         required_height = self.root.winfo_reqheight()
-        final_width = max(required_width, 400)
-        final_height = max(required_height, 260)
+        final_width = required_width + 2
+        final_height = max(required_height, 180)
         self.root.geometry(f"{final_width}x{final_height}")
 
     def _build_main_ui(self):
-        container = tk.Frame(self.root, padx=14, pady=14)
+        container = tk.Frame(self.root, padx=0, pady=4)
         container.pack(fill="both", expand=True)
 
         title = tk.Label(
             container,
             text="Screenshot Snipping Tool",
-            font=("Segoe UI", 12, "bold"),
+            font=("Segoe UI", 10, "bold"),
         )
-        title.pack(pady=(0, 8))
+        title.pack(pady=(0, 1))
 
-        description = tk.Label(
+        build_info = tk.Label(
             container,
-            text="Click Start Snip (Ctrl+N), then drag to capture part of the screen.\nSaves to Pictures\\StudentSnips.",
-            wraplength=340,
+            text=f"v{self.app_version} • Build {self.build_timestamp}",
             justify="center",
+            font=("Segoe UI", 7),
+            fg="#4a4a4a",
         )
-        description.pack(pady=(0, 12))
+        build_info.pack(pady=(0, 2))
+
+        shortcuts = tk.Label(
+            container,
+            text="Ctrl+N Snip  •  Ctrl+O Folder",
+            wraplength=240,
+            justify="center",
+            font=("Segoe UI", 7),
+            fg="#444444",
+        )
+        shortcuts.pack(pady=(0, 3))
+
+        actions = tk.Frame(container)
+        actions.pack(pady=(0, 3), padx=0)
+
+        actions.grid_columnconfigure(0, weight=1)
+        actions.grid_columnconfigure(1, weight=1)
 
         start_btn = tk.Button(
-            container,
+            actions,
             text="Start Snip",
-            width=24,
+            width=13,
             command=self.start_snip,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 7),
         )
-        start_btn.pack(pady=(0, 8))
+        start_btn.grid(row=0, column=0, padx=1, pady=1)
+        self._add_tooltip(start_btn, "Start manual snip selection (shortcut: Ctrl+N).")
 
         folder_btn = tk.Button(
-            container,
-            text="Open Picture Folder (Ctrl+O)",
-            width=24,
+            actions,
+            text="Open Folder",
+            width=13,
             command=self.open_save_folder,
-            font=("Segoe UI", 10),
+            font=("Segoe UI", 7),
         )
-        folder_btn.pack(pady=(0, 10))
-
-        progress_label = tk.Label(
-            container,
-            text="Progress GIF: place frame, capture steps or short video, then export GIF.",
-            fg="#333333",
-        )
-        progress_label.pack(pady=(0, 6))
-
-        progress_row_one = tk.Frame(container)
-        progress_row_one.pack(pady=(0, 4))
+        folder_btn.grid(row=0, column=1, padx=1, pady=1)
+        self._add_tooltip(folder_btn, "Open the StudentSnips save folder (shortcut: Ctrl+O).")
 
         frame_btn = tk.Button(
-            progress_row_one,
-            text="Place Camera Frame",
-            width=16,
+            actions,
+            text="Camera Frame",
+            width=13,
             command=self.open_progress_frame,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 7),
         )
-        frame_btn.pack(side="left", padx=4)
+        frame_btn.grid(row=1, column=0, padx=1, pady=1)
+        self._add_tooltip(frame_btn, "Create or focus the movable camera frame over your work area.")
 
         capture_frame_btn = tk.Button(
-            progress_row_one,
+            actions,
             text="Capture Frame",
-            width=16,
+            width=13,
             command=self.capture_progress_frame,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 7),
         )
-        capture_frame_btn.pack(side="left", padx=4)
-
-        progress_row_two = tk.Frame(container)
-        progress_row_two.pack(pady=(0, 8))
-
-        export_gif_btn = tk.Button(
-            progress_row_two,
-            text="Export Progress GIF",
-            width=16,
-            command=self.export_progress_gif,
-            font=("Segoe UI", 9),
-        )
-        export_gif_btn.pack(side="left", padx=4)
-
-        clear_frames_btn = tk.Button(
-            progress_row_two,
-            text="Clear Frames",
-            width=16,
-            command=self.clear_progress_frames,
-            font=("Segoe UI", 9),
-        )
-        clear_frames_btn.pack(side="left", padx=4)
-
-        progress_row_three = tk.Frame(container)
-        progress_row_three.pack(pady=(0, 8))
+        capture_frame_btn.grid(row=1, column=1, padx=1, pady=1)
+        self._add_tooltip(capture_frame_btn, "Capture one frame from the camera frame region.")
 
         short_video_btn = tk.Button(
-            progress_row_three,
-            text="Capture Short Video",
-            width=16,
+            actions,
+            text="Short Video",
+            width=13,
             command=self.begin_short_video_mode,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 7),
         )
-        short_video_btn.pack(side="left", padx=4)
+        short_video_btn.grid(row=2, column=0, padx=1, pady=1)
+        self._add_tooltip(short_video_btn, "Set FPS for timed capture. Then click Capture Frame once to start recording.")
 
         stop_capture_btn = tk.Button(
-            progress_row_three,
+            actions,
             text="Stop Capture",
-            width=16,
+            width=13,
             command=self.stop_short_video_capture,
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 7),
         )
-        stop_capture_btn.pack(side="left", padx=4)
+        stop_capture_btn.grid(row=2, column=1, padx=1, pady=1)
+        self._add_tooltip(stop_capture_btn, "Stop timed capture and open preview if enough frames were recorded.")
 
-        status = tk.Label(container, textvariable=self.status_var, fg="#333333")
-        status.pack()
-
-        version_label = tk.Label(
-            container,
-            text=f"Version: {self.app_version}",
-            fg="#666666",
-            font=("Segoe UI", 8),
+        clear_frames_btn = tk.Button(
+            actions,
+            text="Clear Frames",
+            width=13,
+            command=self.clear_progress_frames,
+            font=("Segoe UI", 7),
         )
-        version_label.pack(pady=(6, 0))
+        clear_frames_btn.grid(row=3, column=0, padx=1, pady=1)
+        self._add_tooltip(clear_frames_btn, "Remove all currently captured progress frames.")
+
+        export_gif_btn = tk.Button(
+            actions,
+            text="Export Progress",
+            width=13,
+            command=self.export_progress_gif,
+            font=("Segoe UI", 7),
+        )
+        export_gif_btn.grid(row=3, column=1, padx=1, pady=1)
+        self._add_tooltip(export_gif_btn, "Open preview to choose frames and save as GIF, MP4, or WebP.")
+
+        status = tk.Label(container, textvariable=self.status_var, fg="#333333", font=("Segoe UI", 7))
+        status.pack(pady=(3, 0))
 
     def start_snip(self):
         self.status_var.set("Drag to select an area...")
@@ -204,6 +359,7 @@ class SnippingTool:
         self.overlay.attributes("-topmost", True)
         self.overlay.configure(bg="black")
         self.overlay.title("Select region")
+        self._apply_window_icon(self.overlay)
 
         self.canvas = tk.Canvas(self.overlay, cursor="cross", bg="gray11", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -273,6 +429,7 @@ class SnippingTool:
         preview_window.resizable(False, False)
         preview_window.transient(self.root)
         preview_window.grab_set()
+        self._apply_window_icon(preview_window)
 
         preview_container = tk.Frame(preview_window, padx=12, pady=12)
         preview_container.pack(fill="both", expand=True)
@@ -343,6 +500,7 @@ class SnippingTool:
             command=self._preview_undo,
         )
         undo_btn.pack(side="left", padx=4)
+        self._add_tooltip(undo_btn, "Undo the most recent annotation change.")
 
         clear_btn = tk.Button(
             button_row,
@@ -351,6 +509,7 @@ class SnippingTool:
             command=self._preview_clear,
         )
         clear_btn.pack(side="left", padx=4)
+        self._add_tooltip(clear_btn, "Reset annotations and return to the original captured image.")
 
         save_btn = tk.Button(
             button_row,
@@ -359,6 +518,7 @@ class SnippingTool:
             command=lambda: self._save_image(preview_window),
         )
         save_btn.pack(side="left", padx=4)
+        self._add_tooltip(save_btn, "Save this screenshot as the next step image.")
 
         cancel_btn = tk.Button(
             button_row,
@@ -367,6 +527,7 @@ class SnippingTool:
             command=lambda: self._cancel_preview(preview_window),
         )
         cancel_btn.pack(side="left", padx=4)
+        self._add_tooltip(cancel_btn, "Close preview without saving this screenshot.")
 
         preview_window.protocol("WM_DELETE_WINDOW", lambda: self._cancel_preview(preview_window))
 
@@ -577,6 +738,7 @@ class SnippingTool:
         frame_window.minsize(240, 160)
         frame_window.attributes("-topmost", True)
         frame_window.configure(bg="#ff00ff")
+        self._apply_window_icon(frame_window)
 
         try:
             frame_window.wm_attributes("-transparentcolor", "#ff00ff")
@@ -774,10 +936,14 @@ class SnippingTool:
                 preview_window.focus_force()
                 return
 
+        if self.progress_frame_window is not None and self.progress_frame_window.winfo_exists():
+            self._close_progress_frame()
+
         preview_window = tk.Toplevel(self.root)
         preview_window.title("Progress GIF Preview")
         preview_window.transient(self.root)
         preview_window.grab_set()
+        self._apply_window_icon(preview_window)
 
         container = tk.Frame(preview_window, padx=12, pady=12)
         container.pack(fill="both", expand=True)
@@ -803,12 +969,12 @@ class SnippingTool:
         frame_scroll_container = tk.Frame(frame_edit_container)
         frame_scroll_container.pack(fill="both", expand=True, pady=(2, 4))
 
-        frame_canvas = tk.Canvas(frame_scroll_container, height=180, highlightthickness=1, highlightbackground="#b0b0b0")
-        frame_scrollbar = tk.Scrollbar(frame_scroll_container, orient="vertical", command=frame_canvas.yview)
-        frame_canvas.configure(yscrollcommand=frame_scrollbar.set)
+        frame_canvas = tk.Canvas(frame_scroll_container, height=130, highlightthickness=1, highlightbackground="#b0b0b0")
+        frame_scrollbar = tk.Scrollbar(frame_scroll_container, orient="horizontal", command=frame_canvas.xview)
+        frame_canvas.configure(xscrollcommand=frame_scrollbar.set)
 
-        frame_scrollbar.pack(side="right", fill="y")
-        frame_canvas.pack(side="left", fill="both", expand=True)
+        frame_canvas.pack(fill="both", expand=True)
+        frame_scrollbar.pack(fill="x")
 
         frame_items_container = tk.Frame(frame_canvas)
         frame_canvas.create_window((0, 0), window=frame_items_container, anchor="nw")
@@ -821,15 +987,22 @@ class SnippingTool:
         selected_count_var = tk.StringVar(value=f"Selected: {len(self.progress_frames)} / {len(self.progress_frames)}")
         frame_select_vars = []
         frame_thumb_refs = []
+        preview_photo_refs = []
+        fast_resampling = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR
 
         for index, frame in enumerate(self.progress_frames):
-            row = tk.Frame(frame_items_container, pady=2)
-            row.pack(fill="x", padx=2)
+            row = tk.Frame(frame_items_container, padx=4, pady=2)
+            row.pack(side="left", anchor="n")
 
             thumb_image = frame.copy()
-            thumb_image.thumbnail((96, 54))
+            thumb_image.thumbnail((96, 54), fast_resampling)
             thumb_photo = ImageTk.PhotoImage(thumb_image)
             frame_thumb_refs.append(thumb_photo)
+
+            preview_image = frame.copy()
+            preview_image.thumbnail((760, 460), fast_resampling)
+            preview_photo = ImageTk.PhotoImage(preview_image)
+            preview_photo_refs.append(preview_photo)
 
             selected_var = tk.BooleanVar(value=True)
             frame_select_vars.append(selected_var)
@@ -839,12 +1012,12 @@ class SnippingTool:
                 text=f"Frame {index + 1}",
                 variable=selected_var,
                 image=thumb_photo,
-                compound="left",
-                anchor="w",
+                compound="top",
+                anchor="center",
                 command=self._on_preview_frame_selection,
                 padx=6,
             )
-            check_btn.pack(fill="x")
+            check_btn.pack()
 
         frame_edit_buttons = tk.Frame(frame_edit_container)
         frame_edit_buttons.pack(fill="x")
@@ -856,6 +1029,7 @@ class SnippingTool:
             command=self._select_all_preview_frames,
         )
         select_all_btn.pack(side="left", padx=(0, 6))
+        self._add_tooltip(select_all_btn, "Include every captured frame in export.")
 
         select_none_btn = tk.Button(
             frame_edit_buttons,
@@ -864,6 +1038,7 @@ class SnippingTool:
             command=self._select_none_preview_frames,
         )
         select_none_btn.pack(side="left", padx=(0, 8))
+        self._add_tooltip(select_none_btn, "Clear all frame selections.")
 
         tk.Label(frame_edit_buttons, textvariable=selected_count_var).pack(side="left")
 
@@ -888,9 +1063,15 @@ class SnippingTool:
 
         save_btn = tk.Button(button_row, text="Save GIF", width=14, command=self._save_previewed_gif)
         save_btn.pack(side="left", padx=6)
+        self._add_tooltip(save_btn, "Save selected frames as an animated GIF (50MB limit).")
 
         save_mp4_btn = tk.Button(button_row, text="Save MP4", width=14, command=self._save_previewed_mp4)
         save_mp4_btn.pack(side="left", padx=6)
+        self._add_tooltip(save_mp4_btn, "Save selected frames as MP4 video.")
+
+        save_webp_btn = tk.Button(button_row, text="Save WebP", width=14, command=self._save_previewed_webp)
+        save_webp_btn.pack(side="left", padx=6)
+        self._add_tooltip(save_webp_btn, "Save selected frames as animated WebP.")
 
         cancel_btn = tk.Button(
             button_row,
@@ -899,6 +1080,7 @@ class SnippingTool:
             command=self._close_gif_preview_window,
         )
         cancel_btn.pack(side="left", padx=6)
+        self._add_tooltip(cancel_btn, "Close this preview window.")
 
         self.gif_preview_state = {
             "window": preview_window,
@@ -906,6 +1088,7 @@ class SnippingTool:
             "frames": [],
             "frame_select_vars": frame_select_vars,
             "frame_thumb_refs": frame_thumb_refs,
+            "preview_photo_refs": preview_photo_refs,
             "selected_count_var": selected_count_var,
             "index": 0,
             "after_id": None,
@@ -953,12 +1136,8 @@ class SnippingTool:
         if selected_count_var is not None:
             selected_count_var.set(f"Selected: {len(selected_indices)} / {total}")
 
-        display_frames = []
-        for index in selected_indices:
-            frame = self.progress_frames[index]
-            frame_copy = frame.copy()
-            frame_copy.thumbnail((760, 460))
-            display_frames.append(ImageTk.PhotoImage(frame_copy))
+        preview_photo_refs = self.gif_preview_state.get("preview_photo_refs", [])
+        display_frames = [preview_photo_refs[index] for index in selected_indices if index < len(preview_photo_refs)]
 
         self.gif_preview_state["frames"] = display_frames
         self.gif_preview_state["index"] = 0
@@ -1000,14 +1179,28 @@ class SnippingTool:
         after_id = window.after(delay, self._animate_gif_preview)
         self.gif_preview_state["after_id"] = after_id
 
-    def _show_save_progress(self, title, maximum):
+    def _show_save_progress(self, title, maximum, cancel_event=None):
         self._close_save_progress()
+
+        preview_window = None
+        if self.gif_preview_state:
+            preview_window = self.gif_preview_state.get("window")
+
+        if preview_window is not None and preview_window.winfo_exists():
+            parent_window = preview_window
+            try:
+                preview_window.grab_release()
+            except tk.TclError:
+                pass
+        else:
+            parent_window = self.root
 
         progress_window = tk.Toplevel(self.root)
         progress_window.title(title)
-        progress_window.transient(self.root)
-        progress_window.grab_set()
+        progress_window.transient(parent_window)
         progress_window.resizable(False, False)
+        progress_window.attributes("-topmost", True)
+        self._apply_window_icon(progress_window)
 
         container = tk.Frame(progress_window, padx=14, pady=14)
         container.pack(fill="both", expand=True)
@@ -1019,13 +1212,46 @@ class SnippingTool:
         progress = ttk.Progressbar(container, orient="horizontal", mode="determinate", maximum=max(1, maximum), length=340)
         progress.pack(fill="x")
 
+        cancel_button = None
+        if cancel_event is not None:
+            button_row = tk.Frame(container)
+            button_row.pack(fill="x", pady=(10, 0))
+            cancel_button = tk.Button(
+                button_row,
+                text="Cancel",
+                width=10,
+                command=lambda: self._request_save_cancel(cancel_event),
+                font=("Segoe UI", 8),
+            )
+            cancel_button.pack(side="right")
+
         self.save_progress_state = {
             "window": progress_window,
             "status_var": status_var,
             "progress": progress,
             "maximum": max(1, maximum),
+            "cancel_button": cancel_button,
+            "cancel_event": cancel_event,
         }
-        self.root.update_idletasks()
+        self._process_ui_events()
+
+    def _request_save_cancel(self, cancel_event):
+        if cancel_event is None or cancel_event.is_set():
+            return
+
+        cancel_event.set()
+        self._update_save_progress(0, "Cancel requested... stopping export")
+        cancel_button = self.save_progress_state.get("cancel_button") if self.save_progress_state else None
+        if cancel_button is not None:
+            cancel_button.configure(state="disabled")
+        self.status_var.set("Canceling export...")
+
+    def _process_ui_events(self):
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            pass
 
     def _update_save_progress(self, value, text):
         if not self.save_progress_state:
@@ -1037,7 +1263,7 @@ class SnippingTool:
             status_var.set(text)
         if progress is not None:
             progress.configure(value=min(max(value, 0), maximum))
-        self.root.update_idletasks()
+        self._process_ui_events()
 
     def _close_save_progress(self):
         if not self.save_progress_state:
@@ -1045,6 +1271,14 @@ class SnippingTool:
         window = self.save_progress_state.get("window")
         if window is not None and window.winfo_exists():
             window.destroy()
+
+        if self.gif_preview_state:
+            preview_window = self.gif_preview_state.get("window")
+            if preview_window is not None and preview_window.winfo_exists():
+                try:
+                    preview_window.grab_set()
+                except tk.TclError:
+                    pass
         self.save_progress_state = {}
 
     def _save_previewed_gif(self):
@@ -1071,53 +1305,133 @@ class SnippingTool:
             return
 
         duration_ms = self.gif_preview_state.get("speed_ms", 500)
-        selected_frames = [self.progress_frames[index] for index in selected_indices]
+        selected_frames = [self.progress_frames[index].copy() for index in selected_indices]
 
+        cancel_event = threading.Event()
+        self._show_save_progress("Saving GIF", 14, cancel_event=cancel_event)
+        self._update_save_progress(1, "Starting GIF export...")
+        self.status_var.set("Saving GIF...")
+
+        progress_queue = Queue()
+        worker = threading.Thread(
+            target=self._run_gif_export_worker,
+            args=(selected_frames, duration_ms, gif_path, progress_queue, cancel_event),
+            daemon=True,
+        )
+        worker.start()
+        self._poll_gif_export_queue(progress_queue, worker)
+
+    def _run_gif_export_worker(self, selected_frames, duration_ms, gif_path, progress_queue, cancel_event):
         try:
-            self._show_save_progress("Saving GIF", 14)
-
             def progress_callback(attempt, total, text):
-                self._update_save_progress(attempt, text)
+                if cancel_event.is_set():
+                    raise RuntimeError("CANCELED_BY_USER")
+                progress_queue.put(("progress", attempt, text))
 
             gif_data, used_scale, used_colors, used_frame_count, final_size = self._encode_gif_under_limit(
                 selected_frames,
                 duration_ms,
                 MAX_GIF_BYTES,
                 progress_callback=progress_callback,
+                cancel_event=cancel_event,
             )
 
+            if cancel_event.is_set():
+                progress_queue.put(("canceled", None))
+                return
+
             if gif_data is None:
+                progress_queue.put(("over_limit", None))
+                return
+
+            progress_queue.put(("progress", 14, "Writing GIF file..."))
+            with open(gif_path, "wb") as gif_file:
+                gif_file.write(gif_data)
+
+            progress_queue.put(
+                (
+                    "done",
+                    {
+                        "gif_path": gif_path,
+                        "duration_seconds": (used_frame_count * duration_ms) / 1000.0,
+                        "final_size_mb": final_size / (1024 * 1024),
+                        "used_scale": used_scale,
+                        "used_colors": used_colors,
+                        "used_frame_count": used_frame_count,
+                    },
+                )
+            )
+        except RuntimeError as exc:
+            if str(exc) == "CANCELED_BY_USER":
+                progress_queue.put(("canceled", None))
+                return
+            progress_queue.put(("error", str(exc)))
+        except Exception as exc:
+            progress_queue.put(("error", str(exc)))
+
+    def _poll_gif_export_queue(self, progress_queue, worker):
+        saw_terminal_event = False
+
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except Empty:
+                break
+
+            event_type = message[0]
+            if event_type == "progress":
+                _, progress_value, progress_text = message
+                self._update_save_progress(progress_value, progress_text)
+            elif event_type == "done":
+                saw_terminal_event = True
+                _, payload = message
+                self._close_save_progress()
+                gif_path = payload["gif_path"]
+                self.status_var.set(f"GIF saved: {gif_path}")
+                messagebox.showinfo(
+                    "GIF Saved",
+                    (
+                        f"Progress GIF saved to:\n{gif_path}\n\n"
+                        f"Duration: {payload['duration_seconds']:.2f} seconds\n"
+                        f"Size: {payload['final_size_mb']:.2f} MB\n"
+                        f"Scale: {payload['used_scale']:.2f}x\n"
+                        f"Colors: {payload['used_colors']}\n"
+                        f"Frames used: {payload['used_frame_count']}"
+                    ),
+                )
+            elif event_type == "over_limit":
+                saw_terminal_event = True
                 self._close_save_progress()
                 messagebox.showerror(
                     "Export Error",
                     "Could not compress GIF under 50MB. Try selecting fewer frames or using a faster frame delay.",
                 )
                 self.status_var.set("GIF export failed (over 50MB)")
-                return
+            elif event_type == "canceled":
+                saw_terminal_event = True
+                self._close_save_progress()
+                self.status_var.set("GIF export canceled")
+                messagebox.showinfo("Export Canceled", "GIF export was canceled.")
+            elif event_type == "error":
+                saw_terminal_event = True
+                _, error_text = message
+                self._close_save_progress()
+                messagebox.showerror("Export Error", f"Could not export GIF:\n{error_text}")
+                self.status_var.set("GIF export failed")
 
-            self._update_save_progress(14, "Writing GIF file...")
-            with open(gif_path, "wb") as gif_file:
-                gif_file.write(gif_data)
+        if saw_terminal_event:
+            return
 
-            self._close_save_progress()
-            self.status_var.set(f"GIF saved: {gif_path}")
-            duration_seconds = (used_frame_count * duration_ms) / 1000.0
-            messagebox.showinfo(
-                "GIF Saved",
-                (
-                    f"Progress GIF saved to:\n{gif_path}\n\n"
-                    f"Duration: {duration_seconds:.2f} seconds\n"
-                    f"Size: {final_size / (1024 * 1024):.2f} MB\n"
-                    f"Scale: {used_scale:.2f}x\n"
-                    f"Colors: {used_colors}\n"
-                    f"Frames used: {used_frame_count}"
-                ),
-            )
-            self._close_gif_preview_window()
-        except Exception as exc:
-            self._close_save_progress()
-            messagebox.showerror("Export Error", f"Could not export GIF:\n{exc}")
-            self.status_var.set("GIF export failed")
+        if worker.is_alive():
+            self.root.after(60, lambda: self._poll_gif_export_queue(progress_queue, worker))
+            return
+
+        self._close_save_progress()
+        messagebox.showerror(
+            "Export Error",
+            "GIF export ended unexpectedly. Please try again.",
+        )
+        self.status_var.set("GIF export failed")
 
     def _save_previewed_mp4(self):
         if not self.gif_preview_state:
@@ -1144,10 +1458,34 @@ class SnippingTool:
 
         duration_ms = self.gif_preview_state.get("speed_ms", 500)
         fps = max(0.5, 1000.0 / duration_ms)
-        selected_frames = [self.progress_frames[index] for index in selected_indices]
+        selected_frames = [self.progress_frames[index].copy() for index in selected_indices]
 
+        cancel_event = threading.Event()
+        self._show_save_progress("Saving MP4", len(selected_frames), cancel_event=cancel_event)
+        self._update_save_progress(1, "Starting MP4 export...")
+        self.status_var.set("Saving MP4...")
+
+        progress_queue = Queue()
+        worker = threading.Thread(
+            target=self._run_mp4_export_worker,
+            args=(selected_frames, fps, mp4_path, progress_queue, cancel_event),
+            daemon=True,
+        )
+        worker.start()
+        self._poll_mp4_export_queue(progress_queue, worker)
+
+    def _run_mp4_export_worker(self, selected_frames, fps, mp4_path, progress_queue, cancel_event):
         try:
-            self._show_save_progress("Saving MP4", len(selected_frames))
+            try:
+                import imageio.v2 as imageio
+                import numpy as np
+            except Exception as exc:
+                progress_queue.put(("unavailable", str(exc)))
+                return
+
+            if cancel_event.is_set():
+                progress_queue.put(("canceled", None))
+                return
 
             first_frame = selected_frames[0].convert("RGB")
             base_width, base_height = first_frame.size
@@ -1162,39 +1500,329 @@ class SnippingTool:
             writer = imageio.get_writer(mp4_path, fps=fps, codec="libx264", quality=8)
 
             try:
+                total_frames = len(selected_frames)
                 for index, frame in enumerate(selected_frames, start=1):
+                    if cancel_event.is_set():
+                        raise RuntimeError("CANCELED_BY_USER")
                     rgb_frame = frame.convert("RGB")
                     if rgb_frame.size != (base_width, base_height):
                         rgb_frame = rgb_frame.resize((base_width, base_height), resampling)
                     writer.append_data(np.array(rgb_frame))
-                    self._update_save_progress(index, f"Encoding MP4 frame {index}/{len(selected_frames)}...")
+                    progress_queue.put(("progress", index, f"Encoding MP4 frame {index}/{total_frames}..."))
             finally:
                 writer.close()
 
-            self._close_save_progress()
-            duration_seconds = len(selected_frames) / fps
-            self.status_var.set(f"MP4 saved: {mp4_path}")
-            messagebox.showinfo(
-                "MP4 Saved",
-                (
-                    f"Progress MP4 saved to:\n{mp4_path}\n\n"
-                    f"Duration: {duration_seconds:.2f} seconds\n"
-                    f"FPS: {fps:.2f}\n"
-                    f"Frames used: {len(selected_frames)}"
-                ),
-            )
-        except Exception as exc:
-            self._close_save_progress()
-            messagebox.showerror(
-                "Export Error",
-                (
-                    f"Could not export MP4:\n{exc}\n\n"
-                    "If this is the first MP4 export, run build_exe.bat again to ensure MP4 dependencies are installed."
-                ),
-            )
-            self.status_var.set("MP4 export failed")
+            if cancel_event.is_set():
+                try:
+                    if os.path.exists(mp4_path):
+                        os.remove(mp4_path)
+                except OSError:
+                    pass
+                progress_queue.put(("canceled", None))
+                return
 
-    def _encode_gif_under_limit(self, source_frames, duration_ms, max_bytes, progress_callback=None):
+            progress_queue.put(
+                (
+                    "done",
+                    {
+                        "mp4_path": mp4_path,
+                        "duration_seconds": len(selected_frames) / fps,
+                        "fps": fps,
+                        "frames_used": len(selected_frames),
+                    },
+                )
+            )
+        except RuntimeError as exc:
+            if str(exc) == "CANCELED_BY_USER":
+                try:
+                    if os.path.exists(mp4_path):
+                        os.remove(mp4_path)
+                except OSError:
+                    pass
+                progress_queue.put(("canceled", None))
+                return
+            progress_queue.put(("error", str(exc)))
+        except Exception as exc:
+            progress_queue.put(("error", str(exc)))
+
+    def _poll_mp4_export_queue(self, progress_queue, worker):
+        saw_terminal_event = False
+
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except Empty:
+                break
+
+            event_type = message[0]
+            if event_type == "progress":
+                _, progress_value, progress_text = message
+                self._update_save_progress(progress_value, progress_text)
+            elif event_type == "done":
+                saw_terminal_event = True
+                _, payload = message
+                self._close_save_progress()
+                mp4_path = payload["mp4_path"]
+                self.status_var.set(f"MP4 saved: {mp4_path}")
+                messagebox.showinfo(
+                    "MP4 Saved",
+                    (
+                        f"Progress MP4 saved to:\n{mp4_path}\n\n"
+                        f"Duration: {payload['duration_seconds']:.2f} seconds\n"
+                        f"FPS: {payload['fps']:.2f}\n"
+                        f"Frames used: {payload['frames_used']}"
+                    ),
+                )
+            elif event_type == "unavailable":
+                saw_terminal_event = True
+                _, error_text = message
+                self._close_save_progress()
+                messagebox.showerror(
+                    "MP4 Export Unavailable",
+                    (
+                        "MP4 export dependencies are not available in this build.\n"
+                        "Rebuild the app with build_exe.bat and try again.\n\n"
+                        f"Details: {error_text}"
+                    ),
+                )
+                self.status_var.set("MP4 export unavailable")
+            elif event_type == "canceled":
+                saw_terminal_event = True
+                self._close_save_progress()
+                self.status_var.set("MP4 export canceled")
+                messagebox.showinfo("Export Canceled", "MP4 export was canceled.")
+            elif event_type == "error":
+                saw_terminal_event = True
+                _, error_text = message
+                self._close_save_progress()
+                messagebox.showerror(
+                    "Export Error",
+                    (
+                        f"Could not export MP4:\n{error_text}\n\n"
+                        "If this is the first MP4 export, run build_exe.bat again to ensure MP4 dependencies are installed."
+                    ),
+                )
+                self.status_var.set("MP4 export failed")
+
+        if saw_terminal_event:
+            return
+
+        if worker.is_alive():
+            self.root.after(60, lambda: self._poll_mp4_export_queue(progress_queue, worker))
+            return
+
+        self._close_save_progress()
+        messagebox.showerror(
+            "Export Error",
+            "MP4 export ended unexpectedly. Please try again.",
+        )
+        self.status_var.set("MP4 export failed")
+
+    def _save_previewed_webp(self):
+        if not self.gif_preview_state:
+            return
+
+        selected_indices = self._get_selected_frame_indices()
+        if len(selected_indices) < 2:
+            messagebox.showinfo("Save WebP", "Select at least 2 frames to save an animated WebP.")
+            return
+
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        default_name = f"progress_{datetime.now().strftime('%Y%m%d_%H%M%S')}.webp"
+        webp_path = filedialog.asksaveasfilename(
+            title="Save Animated WebP",
+            initialdir=SAVE_DIR,
+            initialfile=default_name,
+            defaultextension=".webp",
+            filetypes=[("Animated WebP", "*.webp")],
+        )
+
+        if not webp_path:
+            self.status_var.set("WebP export canceled")
+            return
+
+        duration_ms = self.gif_preview_state.get("speed_ms", 500)
+        selected_frames = [self.progress_frames[index].copy() for index in selected_indices]
+
+        cancel_event = threading.Event()
+        self._show_save_progress("Saving WebP", 1000, cancel_event=cancel_event)
+        self._update_save_progress(1, "Starting WebP export...")
+        self.status_var.set("Saving WebP...")
+
+        progress_queue = Queue()
+        worker = threading.Thread(
+            target=self._run_webp_export_worker,
+            args=(selected_frames, duration_ms, webp_path, progress_queue, cancel_event),
+            daemon=True,
+        )
+        worker.start()
+        self._poll_webp_export_queue(progress_queue, worker)
+
+    def _run_webp_export_worker(self, selected_frames, duration_ms, webp_path, progress_queue, cancel_event):
+        try:
+            converted_frames = []
+            total_frames = len(selected_frames)
+            for index, frame in enumerate(selected_frames, start=1):
+                if cancel_event.is_set():
+                    progress_queue.put(("canceled", None))
+                    return
+                converted_frames.append(frame.convert("RGB"))
+                prep_progress = int((index / total_frames) * 300)
+                progress_queue.put(("progress", prep_progress, f"Preparing WebP frame {index}/{total_frames}..."))
+
+            estimated_total_bytes = max(
+                800 * 1024,
+                int(sum(frame.width * frame.height * 3 for frame in converted_frames) * 0.10),
+            )
+            last_write_progress = 300
+
+            def on_bytes_written(bytes_written):
+                nonlocal estimated_total_bytes, last_write_progress
+                if cancel_event.is_set():
+                    raise RuntimeError("CANCELED_BY_USER")
+                if bytes_written > estimated_total_bytes:
+                    estimated_total_bytes = int(bytes_written * 1.25)
+
+                write_ratio = min(bytes_written / max(1, estimated_total_bytes), 0.98)
+                write_progress = 300 + int(write_ratio * 650)
+                if write_progress > last_write_progress:
+                    last_write_progress = write_progress
+                    progress_queue.put(
+                        (
+                            "progress",
+                            write_progress,
+                            f"Encoding WebP... {bytes_written / (1024 * 1024):.2f} MB written",
+                        )
+                    )
+
+            progress_queue.put(("progress", 320, "Encoding WebP..."))
+            with ProgressFileWriter(
+                webp_path,
+                progress_callback=on_bytes_written,
+                cancel_event=cancel_event,
+            ) as monitored_file:
+                converted_frames[0].save(
+                    monitored_file,
+                    format="WEBP",
+                    save_all=True,
+                    append_images=converted_frames[1:],
+                    duration=duration_ms,
+                    loop=0,
+                    quality=80,
+                    method=6,
+                )
+                on_bytes_written(monitored_file.bytes_written)
+
+            if cancel_event.is_set():
+                try:
+                    if os.path.exists(webp_path):
+                        os.remove(webp_path)
+                except OSError:
+                    pass
+                progress_queue.put(("canceled", None))
+                return
+
+            progress_queue.put(("progress", 960, "Finalizing WebP metadata..."))
+
+            with Image.open(webp_path) as check_image:
+                webp_frame_count = getattr(check_image, "n_frames", 1)
+                is_animated_webp = webp_frame_count > 1
+
+            progress_queue.put(
+                (
+                    "done",
+                    {
+                        "webp_path": webp_path,
+                        "duration_seconds": (len(converted_frames) * duration_ms) / 1000.0,
+                        "frames_used": len(converted_frames),
+                        "is_animated_webp": is_animated_webp,
+                    },
+                )
+            )
+        except RuntimeError as exc:
+            if str(exc) == "CANCELED_BY_USER":
+                try:
+                    if os.path.exists(webp_path):
+                        os.remove(webp_path)
+                except OSError:
+                    pass
+                progress_queue.put(("canceled", None))
+                return
+            progress_queue.put(("error", str(exc)))
+        except Exception as exc:
+            progress_queue.put(("error", str(exc)))
+
+    def _poll_webp_export_queue(self, progress_queue, worker):
+        saw_terminal_event = False
+
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except Empty:
+                break
+
+            event_type = message[0]
+            if event_type == "progress":
+                _, progress_value, progress_text = message
+                self._update_save_progress(progress_value, progress_text)
+            elif event_type == "done":
+                saw_terminal_event = True
+                _, payload = message
+                self._update_save_progress(1000, "WebP save complete")
+                self._close_save_progress()
+                webp_path = payload["webp_path"]
+                self.status_var.set(f"WebP saved: {webp_path}")
+                messagebox.showinfo(
+                    "WebP Saved",
+                    (
+                        f"Animated WebP saved to:\n{webp_path}\n\n"
+                        f"Duration: {payload['duration_seconds']:.2f} seconds\n"
+                        f"Frames used: {payload['frames_used']}\n"
+                        f"Animated file: {'Yes' if payload['is_animated_webp'] else 'No'}\n\n"
+                        "Note: Windows Photos/File Explorer often show WebP as static even when animated.\n"
+                        "Open the file in Chrome/Edge/Firefox to confirm animation."
+                    ),
+                )
+            elif event_type == "error":
+                saw_terminal_event = True
+                _, error_text = message
+                self._close_save_progress()
+                messagebox.showerror(
+                    "Export Error",
+                    (
+                        f"Could not export animated WebP:\n{error_text}\n\n"
+                        "If needed, use Save GIF or Save MP4 instead."
+                    ),
+                )
+                self.status_var.set("WebP export failed")
+            elif event_type == "canceled":
+                saw_terminal_event = True
+                self._close_save_progress()
+                self.status_var.set("WebP export canceled")
+                messagebox.showinfo("Export Canceled", "WebP export was canceled.")
+
+        if saw_terminal_event:
+            return
+
+        if worker.is_alive():
+            self.root.after(60, lambda: self._poll_webp_export_queue(progress_queue, worker))
+            return
+
+        self._close_save_progress()
+        messagebox.showerror(
+            "Export Error",
+            "WebP export ended unexpectedly. Please try again.",
+        )
+        self.status_var.set("WebP export failed")
+
+    def _encode_gif_under_limit(
+        self,
+        source_frames,
+        duration_ms,
+        max_bytes,
+        progress_callback=None,
+        cancel_event=None,
+    ):
         if len(source_frames) < 2:
             return None, None, None, None, None
 
@@ -1206,6 +1834,9 @@ class SnippingTool:
         max_attempts = 14
 
         for attempt in range(max_attempts):
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("CANCELED_BY_USER")
+
             if progress_callback is not None:
                 progress_callback(
                     attempt + 1,
@@ -1214,7 +1845,10 @@ class SnippingTool:
                 )
 
             encoded_frames = []
-            for frame in working_frames:
+            for frame_index, frame in enumerate(working_frames, start=1):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("CANCELED_BY_USER")
+
                 current = frame.copy()
                 if scale < 0.999:
                     resized_width = max(1, int(current.width * scale))
@@ -1222,8 +1856,12 @@ class SnippingTool:
                     current = current.resize((resized_width, resized_height), resampling)
                 current = current.convert("P", palette=Image.ADAPTIVE, colors=colors)
                 encoded_frames.append(current)
+                if frame_index % 3 == 0 and threading.current_thread() is threading.main_thread():
+                    self._process_ui_events()
 
             buffer = io.BytesIO()
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("CANCELED_BY_USER")
             encoded_frames[0].save(
                 buffer,
                 format="GIF",

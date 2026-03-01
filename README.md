@@ -86,7 +86,7 @@ Use this when students want to show progression for a drawing or 3D model:
 3. After each work step, click **Capture Frame**.
 4. Click **Export Progress GIF** to open an animated preview.
 5. Under the preview, select exactly which frames to include (thumbnail + frame number).
-6. Adjust the frame-delay slider to test speed, then click **Save GIF** or **Save MP4**.
+6. Adjust the frame-delay slider to test speed, then click **Save GIF**, **Save MP4**, or **Save WebP**.
 7. A loading/progress dialog appears while saving.
 8. GIF success popup includes total animation duration in seconds.
 9. GIF export is capped at **50MB** (Google Slides-friendly). If needed, the app auto-compresses by reducing scale/colors/frames.

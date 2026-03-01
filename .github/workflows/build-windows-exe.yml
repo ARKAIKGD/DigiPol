@@ -28,7 +28,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          python -m PyInstaller --noconfirm --onefile --windowed --icon assets/studentsnip.ico --name StudentSnip app.py
+          python -m PyInstaller --noconfirm --onefile --windowed --icon assets/studentsnip.ico --add-data "assets/studentsnip.ico;assets" --name StudentSnip --copy-metadata imageio --copy-metadata imageio-ffmpeg --hidden-import imageio --hidden-import imageio.v2 --hidden-import imageio_ffmpeg --hidden-import numpy app.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4

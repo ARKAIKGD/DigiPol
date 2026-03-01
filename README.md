@@ -77,6 +77,33 @@ To bump version for a new release:
 
 Each save is also recorded in `Pictures\\StudentSnips\\capture_log.csv` with step number and timestamp.
 
+## Progress GIF mode (for process documentation)
+
+Use this when students want to show progression for a drawing or 3D model:
+
+1. Click **Place Camera Frame**.
+2. Move/resize that frame over the exact area to track (the center is transparent so you can see your work behind it).
+3. After each work step, click **Capture Frame**.
+4. Click **Export Progress GIF** to open an animated preview.
+5. Under the preview, select exactly which frames to include (thumbnail + frame number).
+6. Adjust the frame-delay slider to test speed, then click **Save GIF** or **Save MP4**.
+7. A loading/progress dialog appears while saving.
+8. GIF success popup includes total animation duration in seconds.
+9. GIF export is capped at **50MB** (Google Slides-friendly). If needed, the app auto-compresses by reducing scale/colors/frames.
+
+Use **Clear Frames** to reset captured progress frames.
+
+### Short video capture mode
+
+If students want automatic frame capture:
+
+1. Click **Capture Short Video**.
+2. Choose FPS (frames per second, max **15 FPS**).
+3. Click **Capture Frame** once to start timed capture.
+4. Click **Stop Capture** to finish.
+5. The same GIF preview opens; its default ms/frame matches the selected FPS timing.
+6. Students can then fine-tune ms/frame and save GIF or MP4.
+
 Use **Open Picture Folder** in the app to open the screenshot folder quickly.
 
 Press **Esc** during selection to cancel.

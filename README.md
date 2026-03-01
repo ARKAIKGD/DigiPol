@@ -69,10 +69,11 @@ To bump version for a new release:
 
 1. Launch the app.
 2. Click **Start Snip** (or press **Ctrl+N**).
-3. Drag to select an area.
-4. In preview, annotate with **Draw**, **Rectangle**, or **Text** (with **Undo** and **Clear** available).
-5. Click **Save** or **Cancel**.
-6. Saved screenshots go to `Pictures\\StudentSnips` as step files like `step_001_YYYYMMDD_HHMMSS.png`.
+3. Open saved screenshots folder with **Open Picture Folder** (or press **Ctrl+O**).
+4. Drag to select an area.
+5. In preview, annotate with **Draw**, **Rectangle**, or **Text** (with **Undo** and **Clear** available).
+6. Click **Save** or **Cancel**.
+7. Saved screenshots go to `Pictures\\StudentSnips` as step files like `step_001_YYYYMMDD_HHMMSS.png`.
 
 Each save is also recorded in `Pictures\\StudentSnips\\capture_log.csv` with step number and timestamp.
 

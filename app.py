@@ -27,9 +27,9 @@ class SnippingTool:
         self.app_version = get_app_version()
         self.root = tk.Tk()
         self.root.title(f"Student Screenshot Tool v{self.app_version}")
-        self.root.geometry("360x180")
         self.root.resizable(False, False)
         self.root.bind_all("<Control-n>", self._on_shortcut_start_snip)
+        self.root.bind_all("<Control-o>", self._on_shortcut_open_folder)
 
         self.status_var = tk.StringVar(value="Ready")
         self.start_x = 0
@@ -43,9 +43,18 @@ class SnippingTool:
         self.preview_state = {}
 
         self._build_main_ui()
+        self._fit_window_to_content()
+
+    def _fit_window_to_content(self):
+        self.root.update_idletasks()
+        required_width = self.root.winfo_reqwidth()
+        required_height = self.root.winfo_reqheight()
+        final_width = max(required_width, 400)
+        final_height = max(required_height, 260)
+        self.root.geometry(f"{final_width}x{final_height}")
 
     def _build_main_ui(self):
-        container = tk.Frame(self.root, padx=16, pady=16)
+        container = tk.Frame(self.root, padx=14, pady=14)
         container.pack(fill="both", expand=True)
 
         title = tk.Label(
@@ -58,15 +67,15 @@ class SnippingTool:
         description = tk.Label(
             container,
             text="Click Start Snip (Ctrl+N), then drag to capture part of the screen.\nSaves to Pictures\\StudentSnips.",
-            wraplength=320,
+            wraplength=340,
             justify="center",
         )
-        description.pack(pady=(0, 14))
+        description.pack(pady=(0, 12))
 
         start_btn = tk.Button(
             container,
             text="Start Snip",
-            width=20,
+            width=24,
             command=self.start_snip,
             font=("Segoe UI", 10),
         )
@@ -74,8 +83,8 @@ class SnippingTool:
 
         folder_btn = tk.Button(
             container,
-            text="Open Picture Folder",
-            width=20,
+            text="Open Picture Folder (Ctrl+O)",
+            width=24,
             command=self.open_save_folder,
             font=("Segoe UI", 10),
         )
@@ -99,6 +108,10 @@ class SnippingTool:
 
     def _on_shortcut_start_snip(self, _event=None):
         self.start_snip()
+        return "break"
+
+    def _on_shortcut_open_folder(self, _event=None):
+        self.open_save_folder()
         return "break"
 
     def _open_overlay(self):

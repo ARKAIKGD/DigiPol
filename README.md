@@ -31,6 +31,17 @@ A copy is also placed in the project folder:
 
 `dist\\StudentSnip.exe`
 
+## GitHub auto build
+
+This repo includes a GitHub Actions workflow that builds a Windows `.exe` automatically on every push to `main`.
+
+To download the built file:
+
+1. Open your repo on GitHub.
+2. Go to **Actions**.
+3. Open the latest **Build Windows EXE** run.
+4. Download the `StudentSnip-windows-exe` artifact.
+
 ## How to use
 
 1. Launch the app.

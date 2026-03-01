@@ -55,6 +55,16 @@ git push origin v1.0.0
 
 After that, open **Releases** in GitHub and download `StudentSnip.exe` directly from the new release.
 
+## App version display
+
+The app title bar and main window show the current version from `version.txt`.
+
+To bump version for a new release:
+
+1. Update `version.txt` (for example `1.0.1`).
+2. Commit and push to `main`.
+3. Create/push matching git tag (for example `v1.0.1`).
+
 ## How to use
 
 1. Launch the app.

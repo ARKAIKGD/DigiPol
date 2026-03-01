@@ -10,12 +10,23 @@ from PIL import ImageDraw, ImageGrab, ImageTk
 
 SAVE_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "StudentSnips")
 LOG_PATH = os.path.join(SAVE_DIR, "capture_log.csv")
+VERSION_FILE = os.path.join(os.path.dirname(__file__), "version.txt")
+
+
+def get_app_version():
+    try:
+        with open(VERSION_FILE, "r", encoding="utf-8") as version_file:
+            value = version_file.read().strip()
+            return value if value else "dev"
+    except OSError:
+        return "dev"
 
 
 class SnippingTool:
     def __init__(self):
+        self.app_version = get_app_version()
         self.root = tk.Tk()
-        self.root.title("Student Screenshot Tool")
+        self.root.title(f"Student Screenshot Tool v{self.app_version}")
         self.root.geometry("360x180")
         self.root.resizable(False, False)
         self.root.bind_all("<Control-n>", self._on_shortcut_start_snip)
@@ -72,6 +83,14 @@ class SnippingTool:
 
         status = tk.Label(container, textvariable=self.status_var, fg="#333333")
         status.pack()
+
+        version_label = tk.Label(
+            container,
+            text=f"Version: {self.app_version}",
+            fg="#666666",
+            font=("Segoe UI", 8),
+        )
+        version_label.pack(pady=(6, 0))
 
     def start_snip(self):
         self.status_var.set("Drag to select an area...")

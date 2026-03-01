@@ -42,6 +42,19 @@ To download the built file:
 3. Open the latest **Build Windows EXE** run.
 4. Download the `StudentSnip-windows-exe` artifact.
 
+## GitHub release build
+
+This repo also includes a release workflow that publishes the `.exe` to a GitHub Release whenever you push a version tag.
+
+Example:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+After that, open **Releases** in GitHub and download `StudentSnip.exe` directly from the new release.
+
 ## How to use
 
 1. Launch the app.

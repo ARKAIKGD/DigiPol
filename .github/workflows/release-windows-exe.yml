@@ -1,0 +1,41 @@
+name: Release Windows EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Generate app icon
+        run: python generate_icon.py
+
+      - name: Build EXE
+        run: |
+          python -m PyInstaller --noconfirm --onefile --windowed --icon assets/studentsnip.ico --name StudentSnip app.py
+
+      - name: Create GitHub release and upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/StudentSnip.exe
+          generate_release_notes: true

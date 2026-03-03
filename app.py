@@ -182,6 +182,7 @@ class SnippingTool:
         self.short_video_mode_armed = False
         self.preferred_preview_speed_ms = 500
         self.save_progress_state = {}
+        self.progress_frame_drag_state = {}
 
         self._build_main_ui()
         self._fit_window_to_content()
@@ -748,12 +749,19 @@ class SnippingTool:
         border = tk.Frame(
             frame_window,
             bg="#ff00ff",
-            highlightthickness=3,
+            highlightthickness=8,
             highlightbackground="red",
         )
         border.pack(fill="both", expand=True)
 
         frame_window.protocol("WM_DELETE_WINDOW", self._close_progress_frame)
+
+        for widget in (frame_window, border):
+            widget.bind("<ButtonPress-1>", self._progress_frame_on_press)
+            widget.bind("<B1-Motion>", self._progress_frame_on_drag)
+            widget.bind("<ButtonRelease-1>", self._progress_frame_on_release)
+            widget.bind("<Motion>", self._progress_frame_on_motion)
+            widget.bind("<Control-MouseWheel>", self._progress_frame_on_ctrl_mousewheel)
 
         self.progress_frame_window = frame_window
         self.status_var.set("Progress frame created (transparent center)")
@@ -763,6 +771,150 @@ class SnippingTool:
         if self.progress_frame_window is not None and self.progress_frame_window.winfo_exists():
             self.progress_frame_window.destroy()
         self.progress_frame_window = None
+        self.progress_frame_drag_state = {}
+
+    def _progress_frame_get_zone(self, event):
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            return None
+
+        frame_window = self.progress_frame_window
+        width = frame_window.winfo_width()
+        height = frame_window.winfo_height()
+        if width <= 0 or height <= 0:
+            return None
+
+        margin = 36
+        x = event.x_root - frame_window.winfo_rootx()
+        y = event.y_root - frame_window.winfo_rooty()
+
+        left = x <= margin
+        right = x >= (width - margin)
+        top = y <= margin
+        bottom = y >= (height - margin)
+
+        if top and left:
+            return "nw"
+        if top and right:
+            return "ne"
+        if bottom and left:
+            return "sw"
+        if bottom and right:
+            return "se"
+        if top:
+            return "n"
+        if bottom:
+            return "s"
+        if left:
+            return "w"
+        if right:
+            return "e"
+        return "move"
+
+    def _progress_frame_cursor_for_zone(self, zone):
+        cursor_map = {
+            "nw": "size_nw_se",
+            "se": "size_nw_se",
+            "ne": "size_ne_sw",
+            "sw": "size_ne_sw",
+            "n": "size_ns",
+            "s": "size_ns",
+            "e": "size_we",
+            "w": "size_we",
+            "move": "fleur",
+        }
+        return cursor_map.get(zone, "arrow")
+
+    def _progress_frame_on_motion(self, event):
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            return
+        zone = self._progress_frame_get_zone(event)
+        self.progress_frame_window.configure(cursor=self._progress_frame_cursor_for_zone(zone))
+
+    def _progress_frame_on_press(self, event):
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            return
+
+        frame_window = self.progress_frame_window
+        frame_window.update_idletasks()
+
+        self.progress_frame_drag_state = {
+            "zone": self._progress_frame_get_zone(event) or "move",
+            "start_root_x": event.x_root,
+            "start_root_y": event.y_root,
+            "start_x": frame_window.winfo_x(),
+            "start_y": frame_window.winfo_y(),
+            "start_w": frame_window.winfo_width(),
+            "start_h": frame_window.winfo_height(),
+        }
+
+    def _progress_frame_on_drag(self, event):
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            return
+
+        drag_state = self.progress_frame_drag_state
+        if not drag_state:
+            return
+
+        zone = drag_state.get("zone")
+        dx = event.x_root - drag_state.get("start_root_x", event.x_root)
+        dy = event.y_root - drag_state.get("start_root_y", event.y_root)
+
+        min_w = 240
+        min_h = 160
+
+        x = drag_state.get("start_x", 0)
+        y = drag_state.get("start_y", 0)
+        w = drag_state.get("start_w", 240)
+        h = drag_state.get("start_h", 160)
+
+        if zone == "move":
+            x = drag_state.get("start_x", 0) + dx
+            y = drag_state.get("start_y", 0) + dy
+        else:
+            if "w" in zone:
+                x = drag_state.get("start_x", 0) + dx
+                w = drag_state.get("start_w", 240) - dx
+            if "e" in zone:
+                w = drag_state.get("start_w", 240) + dx
+            if "n" in zone:
+                y = drag_state.get("start_y", 0) + dy
+                h = drag_state.get("start_h", 160) - dy
+            if "s" in zone:
+                h = drag_state.get("start_h", 160) + dy
+
+            if w < min_w:
+                if "w" in zone:
+                    x -= (min_w - w)
+                w = min_w
+            if h < min_h:
+                if "n" in zone:
+                    y -= (min_h - h)
+                h = min_h
+
+        self.progress_frame_window.geometry(f"{int(w)}x{int(h)}+{int(x)}+{int(y)}")
+
+    def _progress_frame_on_release(self, _event):
+        self.progress_frame_drag_state = {}
+
+    def _progress_frame_on_ctrl_mousewheel(self, event):
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            return "break"
+
+        frame_window = self.progress_frame_window
+        width = frame_window.winfo_width()
+        height = frame_window.winfo_height()
+        x = frame_window.winfo_x()
+        y = frame_window.winfo_y()
+
+        delta = 1 if event.delta > 0 else -1
+        step = 24
+        new_width = max(240, width + (delta * step))
+        new_height = max(160, height + (delta * step))
+
+        dx = (new_width - width) // 2
+        dy = (new_height - height) // 2
+        frame_window.geometry(f"{new_width}x{new_height}+{x - dx}+{y - dy}")
+        return "break"
 
     def _get_progress_capture_bbox(self):
         if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
@@ -776,9 +928,10 @@ class SnippingTool:
         width = frame_window.winfo_width()
         height = frame_window.winfo_height()
 
-        border_pad = 4
+        border_pad = 10
+        drag_strip_height = 0
         inner_x1 = x1 + border_pad
-        inner_y1 = y1 + border_pad
+        inner_y1 = y1 + border_pad + drag_strip_height
         inner_x2 = x1 + width - border_pad
         inner_y2 = y1 + height - border_pad
 
@@ -966,6 +1119,13 @@ class SnippingTool:
             font=("Segoe UI", 9),
         ).pack(anchor="w")
 
+        tk.Label(
+            frame_edit_container,
+            text="Click thumbnails to keep/remove. Shift+Click selects a range.",
+            font=("Segoe UI", 8),
+            fg="#444444",
+        ).pack(anchor="w", pady=(1, 2))
+
         frame_scroll_container = tk.Frame(frame_edit_container)
         frame_scroll_container.pack(fill="both", expand=True, pady=(2, 4))
 
@@ -986,6 +1146,7 @@ class SnippingTool:
 
         selected_count_var = tk.StringVar(value=f"Selected: {len(self.progress_frames)} / {len(self.progress_frames)}")
         frame_select_vars = []
+        frame_item_widgets = []
         frame_thumb_refs = []
         preview_photo_refs = []
         fast_resampling = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR
@@ -1007,17 +1168,25 @@ class SnippingTool:
             selected_var = tk.BooleanVar(value=True)
             frame_select_vars.append(selected_var)
 
-            check_btn = tk.Checkbutton(
+            frame_btn = tk.Label(
                 row,
                 text=f"Frame {index + 1}",
-                variable=selected_var,
                 image=thumb_photo,
                 compound="top",
                 anchor="center",
-                command=self._on_preview_frame_selection,
                 padx=6,
+                pady=4,
+                cursor="hand2",
+                bd=2,
+                relief="solid",
+                highlightthickness=0,
             )
-            check_btn.pack()
+            frame_btn.pack()
+            frame_btn.bind(
+                "<Button-1>",
+                lambda event, frame_index=index: self._on_preview_frame_item_click(frame_index, event),
+            )
+            frame_item_widgets.append(frame_btn)
 
         frame_edit_buttons = tk.Frame(frame_edit_container)
         frame_edit_buttons.pack(fill="x")
@@ -1087,14 +1256,22 @@ class SnippingTool:
             "label": preview_label,
             "frames": [],
             "frame_select_vars": frame_select_vars,
+            "frame_item_widgets": frame_item_widgets,
             "frame_thumb_refs": frame_thumb_refs,
             "preview_photo_refs": preview_photo_refs,
+            "frame_canvas": frame_canvas,
             "selected_count_var": selected_count_var,
+            "last_clicked_index": None,
             "index": 0,
             "after_id": None,
             "speed_ms": initial_speed_ms,
             "speed_label_var": speed_label_var,
         }
+
+        frame_canvas.bind("<MouseWheel>", self._on_preview_frame_wheel)
+        frame_items_container.bind("<MouseWheel>", self._on_preview_frame_wheel)
+        for frame_btn in frame_item_widgets:
+            frame_btn.bind("<MouseWheel>", self._on_preview_frame_wheel)
 
         self._refresh_gif_preview_frames()
         self._animate_gif_preview()
@@ -1112,6 +1289,7 @@ class SnippingTool:
         frame_select_vars = self.gif_preview_state.get("frame_select_vars", [])
         for selected_var in frame_select_vars:
             selected_var.set(True)
+        self.gif_preview_state["last_clicked_index"] = None
         self._refresh_gif_preview_frames()
 
     def _select_none_preview_frames(self):
@@ -1120,10 +1298,72 @@ class SnippingTool:
         frame_select_vars = self.gif_preview_state.get("frame_select_vars", [])
         for selected_var in frame_select_vars:
             selected_var.set(False)
+        self.gif_preview_state["last_clicked_index"] = None
         self._refresh_gif_preview_frames()
 
     def _on_preview_frame_selection(self, _event=None):
         self._refresh_gif_preview_frames()
+
+    def _on_preview_frame_item_click(self, index, event=None):
+        if not self.gif_preview_state:
+            return
+
+        frame_select_vars = self.gif_preview_state.get("frame_select_vars", [])
+        if index < 0 or index >= len(frame_select_vars):
+            return
+
+        selected_var = frame_select_vars[index]
+        new_state = not selected_var.get()
+        shift_pressed = bool(event is not None and (event.state & 0x0001))
+        anchor_index = self.gif_preview_state.get("last_clicked_index")
+
+        if shift_pressed and anchor_index is not None and 0 <= anchor_index < len(frame_select_vars):
+            start = min(anchor_index, index)
+            end = max(anchor_index, index)
+            for range_index in range(start, end + 1):
+                frame_select_vars[range_index].set(new_state)
+        else:
+            selected_var.set(new_state)
+
+        self.gif_preview_state["last_clicked_index"] = index
+        self._refresh_gif_preview_frames()
+
+    def _refresh_preview_frame_item_styles(self):
+        if not self.gif_preview_state:
+            return
+
+        frame_select_vars = self.gif_preview_state.get("frame_select_vars", [])
+        frame_item_widgets = self.gif_preview_state.get("frame_item_widgets", [])
+
+        for index, widget in enumerate(frame_item_widgets):
+            selected = index < len(frame_select_vars) and frame_select_vars[index].get()
+            if selected:
+                widget.configure(bg="#cfe8ff", relief="solid", bd=2)
+            else:
+                widget.configure(bg="#f2f2f2", relief="solid", bd=2)
+
+    def _on_preview_frame_wheel(self, event):
+        if not self.gif_preview_state:
+            return
+
+        frame_canvas = self.gif_preview_state.get("frame_canvas")
+        if frame_canvas is None or not frame_canvas.winfo_exists():
+            return
+
+        delta = 0
+        if hasattr(event, "delta") and event.delta:
+            delta = -1 if event.delta > 0 else 1
+        elif getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+
+        if delta == 0:
+            return
+
+        step = 6 if (event.state & 0x0001) else 3
+        frame_canvas.xview_scroll(delta * step, "units")
+        return "break"
 
     def _refresh_gif_preview_frames(self):
         if not self.gif_preview_state:
@@ -1135,6 +1375,8 @@ class SnippingTool:
 
         if selected_count_var is not None:
             selected_count_var.set(f"Selected: {len(selected_indices)} / {total}")
+
+        self._refresh_preview_frame_item_styles()
 
         preview_photo_refs = self.gif_preview_state.get("preview_photo_refs", [])
         display_frames = [preview_photo_refs[index] for index in selected_indices if index < len(preview_photo_refs)]

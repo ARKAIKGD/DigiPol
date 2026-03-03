@@ -737,6 +737,7 @@ class SnippingTool:
         frame_window.title("Progress Camera Frame")
         frame_window.geometry("520x320+120+120")
         frame_window.minsize(240, 160)
+        frame_window.resizable(True, True)
         frame_window.attributes("-topmost", True)
         frame_window.configure(bg="#ff00ff")
         self._apply_window_icon(frame_window)
@@ -749,22 +750,21 @@ class SnippingTool:
         border = tk.Frame(
             frame_window,
             bg="#ff00ff",
-            highlightthickness=8,
+            highlightthickness=2,
             highlightbackground="red",
         )
         border.pack(fill="both", expand=True)
 
+        sizegrip = ttk.Sizegrip(frame_window)
+        sizegrip.place(relx=1.0, rely=1.0, anchor="se")
+
         frame_window.protocol("WM_DELETE_WINDOW", self._close_progress_frame)
 
         for widget in (frame_window, border):
-            widget.bind("<ButtonPress-1>", self._progress_frame_on_press)
-            widget.bind("<B1-Motion>", self._progress_frame_on_drag)
-            widget.bind("<ButtonRelease-1>", self._progress_frame_on_release)
-            widget.bind("<Motion>", self._progress_frame_on_motion)
             widget.bind("<Control-MouseWheel>", self._progress_frame_on_ctrl_mousewheel)
 
         self.progress_frame_window = frame_window
-        self.status_var.set("Progress frame created (transparent center)")
+        self.status_var.set("Progress frame created (use title bar/corners to move or resize)")
 
     def _close_progress_frame(self):
         self._stop_short_video_capture(open_preview=False)

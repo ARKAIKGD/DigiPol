@@ -183,6 +183,7 @@ class SnippingTool:
         self.preferred_preview_speed_ms = 500
         self.save_progress_state = {}
         self.progress_frame_drag_state = {}
+        self.short_video_toggle_btn = None
 
         self._build_main_ui()
         self._fit_window_to_content()
@@ -297,25 +298,16 @@ class SnippingTool:
         capture_frame_btn.grid(row=1, column=1, padx=1, pady=1)
         self._add_tooltip(capture_frame_btn, "Capture one frame from the camera frame region.")
 
-        short_video_btn = tk.Button(
-            actions,
-            text="Short Video",
-            width=13,
-            command=self.begin_short_video_mode,
-            font=("Segoe UI", 7),
-        )
-        short_video_btn.grid(row=2, column=0, padx=1, pady=1)
-        self._add_tooltip(short_video_btn, "Set FPS for timed capture. Then click Capture Frame once to start recording.")
-
         stop_capture_btn = tk.Button(
             actions,
-            text="Stop Capture",
-            width=13,
-            command=self.stop_short_video_capture,
+            text="Start Capture",
+            width=27,
+            command=self.toggle_short_video_capture,
             font=("Segoe UI", 7),
         )
-        stop_capture_btn.grid(row=2, column=1, padx=1, pady=1)
-        self._add_tooltip(stop_capture_btn, "Stop timed capture and open preview if enough frames were recorded.")
+        stop_capture_btn.grid(row=2, column=0, columnspan=2, padx=1, pady=1, sticky="ew")
+        self._add_tooltip(stop_capture_btn, "Toggle timed capture on/off. Start prompts for FPS, Stop opens preview if enough frames.")
+        self.short_video_toggle_btn = stop_capture_btn
 
         clear_frames_btn = tk.Button(
             actions,
@@ -749,21 +741,31 @@ class SnippingTool:
 
         border = tk.Frame(
             frame_window,
-            bg="#ff00ff",
-            highlightthickness=2,
-            highlightbackground="red",
+            bg="red",
+            highlightthickness=0,
+            bd=0,
         )
         border.pack(fill="both", expand=True)
 
-        sizegrip = ttk.Sizegrip(frame_window)
-        sizegrip.place(relx=1.0, rely=1.0, anchor="se")
+        center_view = tk.Frame(
+            border,
+            bg="#ff00ff",
+            bd=0,
+            highlightthickness=0,
+        )
+        center_view.pack(fill="both", expand=True, padx=8, pady=8)
 
         frame_window.protocol("WM_DELETE_WINDOW", self._close_progress_frame)
 
         for widget in (frame_window, border):
+            widget.bind("<Motion>", self._progress_frame_on_motion)
+            widget.bind("<ButtonPress-1>", self._progress_frame_on_press)
+            widget.bind("<B1-Motion>", self._progress_frame_on_drag)
+            widget.bind("<ButtonRelease-1>", self._progress_frame_on_release)
             widget.bind("<Control-MouseWheel>", self._progress_frame_on_ctrl_mousewheel)
 
         self.progress_frame_window = frame_window
+        self.progress_frame_border = border
         self.status_var.set("Progress frame created (use title bar/corners to move or resize)")
 
     def _close_progress_frame(self):
@@ -771,21 +773,25 @@ class SnippingTool:
         if self.progress_frame_window is not None and self.progress_frame_window.winfo_exists():
             self.progress_frame_window.destroy()
         self.progress_frame_window = None
+        self.progress_frame_border = None
         self.progress_frame_drag_state = {}
 
     def _progress_frame_get_zone(self, event):
         if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
             return None
 
-        frame_window = self.progress_frame_window
-        width = frame_window.winfo_width()
-        height = frame_window.winfo_height()
+        hit_widget = getattr(self, "progress_frame_border", None)
+        if hit_widget is None or not hit_widget.winfo_exists():
+            hit_widget = self.progress_frame_window
+
+        width = hit_widget.winfo_width()
+        height = hit_widget.winfo_height()
         if width <= 0 or height <= 0:
             return None
 
-        margin = 36
-        x = event.x_root - frame_window.winfo_rootx()
-        y = event.y_root - frame_window.winfo_rooty()
+        margin = 14
+        x = event.x_root - hit_widget.winfo_rootx()
+        y = event.y_root - hit_widget.winfo_rooty()
 
         left = x <= margin
         right = x >= (width - margin)
@@ -808,7 +814,7 @@ class SnippingTool:
             return "w"
         if right:
             return "e"
-        return "move"
+        return None
 
     def _progress_frame_cursor_for_zone(self, zone):
         cursor_map = {
@@ -820,7 +826,6 @@ class SnippingTool:
             "s": "size_ns",
             "e": "size_we",
             "w": "size_we",
-            "move": "fleur",
         }
         return cursor_map.get(zone, "arrow")
 
@@ -837,8 +842,13 @@ class SnippingTool:
         frame_window = self.progress_frame_window
         frame_window.update_idletasks()
 
+        zone = self._progress_frame_get_zone(event)
+        if zone is None:
+            self.progress_frame_drag_state = {}
+            return
+
         self.progress_frame_drag_state = {
-            "zone": self._progress_frame_get_zone(event) or "move",
+            "zone": zone,
             "start_root_x": event.x_root,
             "start_root_y": event.y_root,
             "start_x": frame_window.winfo_x(),
@@ -867,29 +877,25 @@ class SnippingTool:
         w = drag_state.get("start_w", 240)
         h = drag_state.get("start_h", 160)
 
-        if zone == "move":
+        if "w" in zone:
             x = drag_state.get("start_x", 0) + dx
+            w = drag_state.get("start_w", 240) - dx
+        if "e" in zone:
+            w = drag_state.get("start_w", 240) + dx
+        if "n" in zone:
             y = drag_state.get("start_y", 0) + dy
-        else:
-            if "w" in zone:
-                x = drag_state.get("start_x", 0) + dx
-                w = drag_state.get("start_w", 240) - dx
-            if "e" in zone:
-                w = drag_state.get("start_w", 240) + dx
-            if "n" in zone:
-                y = drag_state.get("start_y", 0) + dy
-                h = drag_state.get("start_h", 160) - dy
-            if "s" in zone:
-                h = drag_state.get("start_h", 160) + dy
+            h = drag_state.get("start_h", 160) - dy
+        if "s" in zone:
+            h = drag_state.get("start_h", 160) + dy
 
-            if w < min_w:
-                if "w" in zone:
-                    x -= (min_w - w)
-                w = min_w
-            if h < min_h:
-                if "n" in zone:
-                    y -= (min_h - h)
-                h = min_h
+        if w < min_w:
+            if "w" in zone:
+                x -= (min_w - w)
+            w = min_w
+        if h < min_h:
+            if "n" in zone:
+                y -= (min_h - h)
+            h = min_h
 
         self.progress_frame_window.geometry(f"{int(w)}x{int(h)}+{int(x)}+{int(y)}")
 
@@ -928,7 +934,7 @@ class SnippingTool:
         width = frame_window.winfo_width()
         height = frame_window.winfo_height()
 
-        border_pad = 10
+        border_pad = 8
         drag_strip_height = 0
         inner_x1 = x1 + border_pad
         inner_y1 = y1 + border_pad + drag_strip_height
@@ -985,12 +991,36 @@ class SnippingTool:
 
         if fps is None:
             self.status_var.set("Short video setup canceled")
+            self._update_short_video_toggle_button()
             return
 
         self.video_capture_interval_ms = max(int(1000 / fps), 33)
         self.preferred_preview_speed_ms = self.video_capture_interval_ms
         self.short_video_mode_armed = True
-        self.status_var.set(f"Short video ready at {fps} FPS. Click Capture Frame to start.")
+        self.status_var.set(f"Short video ready at {fps} FPS. Click Start Capture to begin.")
+        self._update_short_video_toggle_button()
+
+    def _update_short_video_toggle_button(self):
+        if self.short_video_toggle_btn is None or not self.short_video_toggle_btn.winfo_exists():
+            return
+        self.short_video_toggle_btn.configure(
+            text="Stop Capture" if self.video_capture_running else "Start Capture"
+        )
+
+    def toggle_short_video_capture(self):
+        if self.video_capture_running:
+            self.stop_short_video_capture()
+            return
+
+        if self.progress_frame_window is None or not self.progress_frame_window.winfo_exists():
+            messagebox.showinfo("Short Video", "Create the camera frame first.")
+            return
+
+        if not self.short_video_mode_armed:
+            self.begin_short_video_mode()
+
+        if self.short_video_mode_armed:
+            self._start_short_video_capture()
 
     def _start_short_video_capture(self):
         if self.video_capture_running:
@@ -1005,6 +1035,7 @@ class SnippingTool:
         self.video_capture_running = True
         self.short_video_mode_armed = False
         self.status_var.set("Recording short video... Click Stop Capture to finish.")
+        self._update_short_video_toggle_button()
         self._capture_short_video_tick()
 
     def _capture_short_video_tick(self):
@@ -1043,6 +1074,8 @@ class SnippingTool:
         if was_running:
             self.status_var.set(f"Capture stopped ({len(self.progress_frames)} frames)")
 
+        self._update_short_video_toggle_button()
+
         if open_preview and len(self.progress_frames) >= 2:
             self._open_gif_preview_window()
 
@@ -1053,6 +1086,7 @@ class SnippingTool:
                 self.status_var.set("Short video setup canceled")
             else:
                 self.status_var.set("No short video capture running")
+            self._update_short_video_toggle_button()
             return
 
         frame_count = len(self.progress_frames)

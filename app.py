@@ -12,10 +12,10 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageDraw, ImageGrab, ImageTk
 
 
-SAVE_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "StudentSnips")
+SAVE_DIR = os.path.join(os.path.expanduser("~"), "Pictures", "Snipit")
 LOG_PATH = os.path.join(SAVE_DIR, "capture_log.csv")
 VERSION_FILE = os.path.join(os.path.dirname(__file__), "version.txt")
-ICON_REL_PATH = os.path.join("assets", "studentsnip.ico")
+ICON_REL_PATH = os.path.join("assets", "snipit.ico")
 MAX_GIF_BYTES = 50 * 1024 * 1024
 
 
@@ -155,9 +155,7 @@ class SnippingTool:
         self.icon_path = self._resolve_icon_path()
         self._configure_windows_app_id()
         self.root = tk.Tk()
-        self.root.title(
-            f"Student Screenshot Tool v{self.app_version} | Build {self.build_timestamp}"
-        )
+        self.root.title(f"Snipit v{self.app_version} | Build {self.build_timestamp}")
         self.root.resizable(False, False)
         self.root.bind_all("<Control-n>", self._on_shortcut_start_snip)
         self.root.bind_all("<Control-o>", self._on_shortcut_open_folder)
@@ -199,7 +197,7 @@ class SnippingTool:
         try:
             import ctypes
 
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DigiPol.StudentSnip")
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DigiPol.Snipit")
         except Exception:
             pass
 
@@ -226,11 +224,7 @@ class SnippingTool:
         container = tk.Frame(self.root, padx=0, pady=4)
         container.pack(fill="both", expand=True)
 
-        title = tk.Label(
-            container,
-            text="Screenshot Snipping Tool",
-            font=("Segoe UI", 10, "bold"),
-        )
+        title = tk.Label(container, text="Snipit", font=("Segoe UI", 10, "bold"))
         title.pack(pady=(0, 1))
 
         build_info = tk.Label(
@@ -276,7 +270,7 @@ class SnippingTool:
             font=("Segoe UI", 7),
         )
         folder_btn.grid(row=0, column=1, padx=1, pady=1)
-        self._add_tooltip(folder_btn, "Open the StudentSnips save folder (shortcut: Ctrl+O).")
+        self._add_tooltip(folder_btn, "Open the Snipit save folder (shortcut: Ctrl+O).")
 
         frame_btn = tk.Button(
             actions,
@@ -477,7 +471,7 @@ class SnippingTool:
 
         info_label = tk.Label(
             preview_container,
-            text="Annotate if needed, then Save. Files are saved in step order to Pictures\\StudentSnips.",
+            text="Annotate if needed, then Save. Files are saved in step order to Pictures\\Snipit.",
             justify="center",
             wraplength=880,
         )

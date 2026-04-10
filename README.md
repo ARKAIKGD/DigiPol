@@ -1,4 +1,4 @@
-# Student Screenshot Tool (Windows)
+# Snipit (Windows)
 
 A simple snipping tool for students to capture part of the screen and save as PNG.
 
@@ -25,11 +25,11 @@ The script creates a local `.venv` automatically, installs dependencies, generat
 
 After build finishes, the executable is at:
 
-`%LOCALAPPDATA%\\StudentSnipBuild\\dist\\StudentSnip.exe`
+`%LOCALAPPDATA%\\SnipitBuild\\dist\\Snipit.exe`
 
 A copy is also placed in the project folder:
 
-`dist\\StudentSnip.exe`
+`dist\\Snipit.exe`
 
 ## GitHub auto build
 
@@ -40,7 +40,7 @@ To download the built file:
 1. Open your repo on GitHub.
 2. Go to **Actions**.
 3. Open the latest **Build Windows EXE** run.
-4. Download the `StudentSnip-windows-exe` artifact.
+4. Download the `Snipit-windows-exe` artifact.
 
 ## GitHub release build
 
@@ -53,7 +53,7 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-After that, open **Releases** in GitHub and download `StudentSnip.exe` directly from the new release.
+After that, open **Releases** in GitHub and download `Snipit.exe` directly from the new release.
 
 ## App version display
 
@@ -69,13 +69,13 @@ To bump version for a new release:
 
 1. Launch the app.
 2. Click **Start Snip** (or press **Ctrl+N**).
-3. Open saved screenshots folder with **Open Picture Folder** (or press **Ctrl+O**).
+3. Open saved screenshots folder with **Open Folder** (or press **Ctrl+O**).
 4. Drag to select an area.
 5. In preview, annotate with **Draw**, **Rectangle**, or **Text** (with **Undo** and **Clear** available).
 6. Click **Save** or **Cancel**.
-7. Saved screenshots go to `Pictures\\StudentSnips` as step files like `step_001_YYYYMMDD_HHMMSS.png`.
+7. Saved screenshots go to `Pictures\\Snipit` as step files like `step_001_YYYYMMDD_HHMMSS.png`.
 
-Each save is also recorded in `Pictures\\StudentSnips\\capture_log.csv` with step number and timestamp.
+Each save is also recorded in `Pictures\\Snipit\\capture_log.csv` with step number and timestamp.
 
 ## Progress GIF mode (for process documentation)
 
@@ -104,6 +104,6 @@ If students want automatic frame capture:
 5. The same GIF preview opens; its default ms/frame matches the selected FPS timing.
 6. Students can then fine-tune ms/frame and save GIF or MP4.
 
-Use **Open Picture Folder** in the app to open the screenshot folder quickly.
+Use **Open Folder** in the app to open the screenshot folder quickly.
 
 Press **Esc** during selection to cancel.

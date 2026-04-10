@@ -19,4 +19,4 @@ def create_icon(path: str) -> None:
 
 
 if __name__ == "__main__":
-    create_icon(os.path.join("assets", "studentsnip.ico"))
+    create_icon(os.path.join("assets", "snipit.ico"))
